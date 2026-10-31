@@ -53,13 +53,36 @@ PAPER_DIR = os.path.normpath(os.path.join(HERE, "..", "papers"))
 PAPER_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 
 
+def _paper_order(d):
+    """纸面目录 rects.json 里的 "_order"：[文件名…]，决定一页一张的使用顺序。"""
+    import json
+    j = os.path.join(d, "rects.json")
+    if not os.path.isfile(j):
+        return []
+    try:
+        with open(j, encoding="utf-8") as f:
+            o = json.load(f).get("_order")
+        return [str(x) for x in o] if isinstance(o, list) else []
+    except Exception:
+        return []
+
+
 def default_papers(paper_dir=None):
-    """返回默认纸面组（绝对路径，按文件名排序 = 使用顺序）。"""
+    """返回默认纸面组（绝对路径）。
+
+    顺序优先按 rects.json 的 "_order"（正反面必须交替，见 papers/rects.json 的说明），
+    "_order" 里没列到的文件排在最后、按文件名。
+    """
     d = paper_dir or PAPER_DIR
     if not os.path.isdir(d):
         return []
-    return [os.path.join(d, n) for n in sorted(os.listdir(d))
-            if n.lower().endswith(PAPER_EXT) and not n.startswith(".")]
+    names = [n for n in sorted(os.listdir(d))
+             if n.lower().endswith(PAPER_EXT) and not n.startswith(".")]
+    order = _paper_order(d)
+    if order:
+        rank = {n: i for i, n in enumerate(order)}
+        names.sort(key=lambda n: (rank.get(n, len(rank)), n))
+    return [os.path.join(d, n) for n in names]
 
 
 # ---------------------------------------------------------------- job

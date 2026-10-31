@@ -225,7 +225,9 @@ def load_rects(paths):
                 d = json.load(f)
             clean = bool(d.pop("_clean", False))
             d.pop("_note", None)
-            m.update({k: v for k, v in d.items() if isinstance(v, (list, tuple))})
+            d.pop("_order", None)          # 只是使用顺序，不是可写区，别混进 rects
+            m.update({k: v for k, v in d.items()
+                      if isinstance(v, (list, tuple)) and not str(k).startswith("_")})
         except Exception:
             pass
         break

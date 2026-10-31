@@ -1,6 +1,21 @@
 {
  "_note": "这 12 张是已经去掉横线的白纸（skill 内置纸面组），不需要再擦线；值为该纸面的可写区 [x0,x1,y0,y1]",
  "_clean": true,
+ "_order": [
+  "paper-01.png",
+  "paper-03.png",
+  "paper-02.png",
+  "paper-05.png",
+  "paper-04.png",
+  "paper-06.png",
+  "paper-08.png",
+  "paper-07.png",
+  "paper-10.png",
+  "paper-09.png",
+  "paper-11.png",
+  "paper-12.png"
+ ],
+ "_order_note": "使用顺序：一页一张、用完循环。按「右装订 → 左装订」交替排列，因为同一本线圈本翻过来拍背面时装订环会换到另一侧；连着两页同侧在真实本子上不存在。",
  "paper-01.png": [
   92,
   1222,
