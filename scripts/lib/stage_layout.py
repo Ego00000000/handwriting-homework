@@ -11,7 +11,10 @@ import edge
 
 SMAX = 0.40          # 多题一页时的字号缩放上限（观感约束，与纸面无关）
 SMAX_ONE = 0.62      # 一题一页时允许更大
-SMIN = 0.30
+SMIN = 0.30          # 防溢出的兜底下限（低于它会强行放大，可能顶出纸边，别拿它当目标）
+MIN_READ = 0.38      # 目标字号：分页后统一 s 低于它，就多分一页。0.40 在多数组面下不可达
+                     # （无图题文字块约 2900px，纸面可写宽约 1100px，宽度天花板 ≈ 0.38）
+GAIN_MIN = 0.08      # 多分一页至少要把字号提升 8%，否则不值：页数多一页是看得见的代价
 FIG_H_RATIO = 1.22   # 图高上限 = 文字块高 × 此值
 ONE_FIG_H_RATIO = 1.55
 
@@ -88,13 +91,25 @@ def plan(infos, paper, layout):
         return min(vals) if vals else smax
 
     if page_sets is None:
+        # 两个停止条件，谁先触发算谁：
+        #   ① 达到目标字号 min_scale（默认 0.38）
+        #   ② 再多分一页换来的字号提升不足 min_gain（默认 8%）——页数也是代价
+        # 目标不可达时停在「最后一档有正收益的分页」，不会一路拆到一题一页
+        # （过了拐点 s 反而下降，因为宽度约束接管了）。
+        target = float(layout.get("min_scale") or MIN_READ)
+        min_gain = float(layout.get("min_gain") or GAIN_MIN)
+        best_s, best_pages, prev_s = -1.0, [[i] for i in range(n)], None
         for np_ in range(1, n + 1):
             cand = split_pages(heights, np_)
-            if fit_all(cand) >= SMIN:
+            s_cand = fit_all(cand)
+            if prev_s is not None and s_cand < prev_s * (1 + min_gain):
+                break
+            best_s, best_pages, prev_s = s_cand, cand, s_cand
+            if s_cand >= target:
                 page_sets = cand
                 break
-        else:
-            page_sets = [[i] for i in range(n)]
+        if page_sets is None:
+            page_sets = best_pages
 
     # 全篇统一字号：每页都要放得下，所以取各页上限的最小值
     s = max(SMIN, min(fit_all(page_sets), smax))
