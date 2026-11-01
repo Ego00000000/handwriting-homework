@@ -13,3 +13,5 @@ desktop.ini
 .venv/
 venv/
 .env
+
+glyphs.json

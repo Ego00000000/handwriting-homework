@@ -11,6 +11,7 @@ import os
 import api
 import edge
 import figures
+import glyphs
 import imgfast
 import pngtool
 import cwrap as tw
@@ -135,6 +136,54 @@ def page_sig(txt, opts, page_w, page_h, budget):
     return h.hexdigest()[:10]
 
 
+def _fig_height(spec):
+    """图形块在本页画布上的高度（不画图也能算，用于渲染前预检）。"""
+    if isinstance(spec, str):
+        spec = {"name": spec}
+    size = spec.get("size")
+    if "file" in spec and not size:
+        size = list(edge.read_size(spec["file"]))
+    if size:
+        return int(size[1])
+    name = spec.get("name")
+    if name not in figures.REGISTRY:
+        raise ValueError(f"未知图形名：{name}（可用：{', '.join(sorted(figures.REGISTRY))}）")
+    return int(figures.REGISTRY[name][2])
+
+
+def check_room(index, figs, opts, lines, page_h, budget):
+    """渲染前检查「文字行数」与「文字 + 图」是否放得进一张画布。
+
+    旧版不检查，两种溢出都是静默的：
+      · 行数超出画布高度 → 服务端直接裁掉超出的行（拆块量到的是裁完的墨迹，永远发现不了）；
+      · 文字 + 图超出画布 → 图被画到画布外，拆块时才报「没检测到图形墨迹」，整个 build 中断。
+    """
+    top, bottom = opts["margin"][0], opts["margin"][1]
+    ls = opts["line_spacing"]
+    max_lines = int((page_h - top - 90) // ls)
+    if lines > max_lines:
+        raise ValueError(
+            f"第 {index} 题文字 {lines} 行，超过一张画布 {max_lines} 行的上限，"
+            f"超出的部分会被直接裁掉。\n"
+            f"  每行约 {budget:.0f} 字，这张画布最多约 {int(max_lines * budget)} 字，"
+            f"当前约 {int(lines * budget)} 字。\n"
+            f"  处理办法：拆成两题（推荐），或压到 {max_lines} 行以内。")
+    if not figs:
+        return
+    y_fig = top + lines * ls + 90
+    need = sum(_fig_height(f) for f in figs) + 50 * len(figs)
+    avail = page_h - bottom - y_fig
+    if avail >= need:
+        return
+    fig_lines = max(0, int((page_h - bottom - 90 - need) // ls))
+    raise ValueError(
+        f"第 {index} 题：文字 {lines} 行 + {len(figs)} 张图（需 {need}px）放不进一张画布。\n"
+        f"  画布高 {page_h}px，图要从 {y_fig}px 开始，只剩 {avail}px。\n"
+        f"  配图题最多可写 {fig_lines} 行（约 {int(fig_lines * budget)} 字），当前 {lines} 行"
+        f"（约 {int(lines * budget)} 字）。\n"
+        f"  处理办法：把文字压到 {fig_lines} 行以内，或把图挪到下一题。")
+
+
 def canvas_of(q, opts):
     """本题该用哪块画布：有图的用标准画布，无图的（默认）用加宽画布。
 
@@ -154,7 +203,17 @@ def build(index, q, opts, workdir, edge_exe, force=False, verbose=True):
     page_png = os.path.join(pages_dir, f"q{index}.png")
 
     page_w, page_h, budget = canvas_of(q, opts)
-    txt = tw.wrap(q.get("text", ""), budget, opts["cjk"], opts["ascii"])
+    raw = q.get("text", "")
+    if opts.get("glyph_fix", True):
+        # 字体写不出来的字符会被服务端静默跳过，先换掉或直接报错
+        raw, _used, _missed = glyphs.sanitize(
+            raw, opts["font"],
+            strict=opts.get("glyph_strict", False),
+            allow_drop=opts.get("allow_drop", False),
+            tag=f"第 {index} 题", verbose=verbose)
+    txt = tw.wrap(raw, budget, opts["cjk"], opts["ascii"])
+    lines = txt.count("\n") + 1
+    check_room(index, q.get("figures") or [], opts, lines, page_h, budget)
     sig = page_sig(txt, opts, page_w, page_h, budget)
     text_png = os.path.join(pages_dir, f"q{index}_text_{sig}.png")
     meta_path = os.path.join(pages_dir, f"q{index}.json")
@@ -200,7 +259,6 @@ def build(index, q, opts, workdir, edge_exe, force=False, verbose=True):
         with open(text_png, "wb") as f:
             f.write(imgs[0])
 
-    lines = txt.count("\n") + 1
     y = opts["margin"][0] + lines * opts["line_spacing"] + 90
     html_blocks = []
     for j, spec in enumerate(q.get("figures") or [], 1):

@@ -10,7 +10,7 @@ TAIL_FORBIDDEN = "=：（【《“‘"
 PUNCT = HEAD_FORBIDDEN + ",.;:"
 
 
-def char_width(ch, cjk=1.0, ascii_=0.62):
+def char_width(ch, cjk=1.0, ascii_=0.67):
     return cjk if ord(ch) > 0x2000 else ascii_
 
 
@@ -18,8 +18,12 @@ def line_width(s, cjk=1.0, ascii_=0.62):
     return sum(char_width(c, cjk, ascii_) for c in s)
 
 
-def wrap(text, budget=17.0, cjk=1.0, ascii_=0.62, mode="hard"):
-    """返回折行后的文本（保留原有换行）。"""
+def wrap(text, budget=17.0, cjk=1.0, ascii_=0.67, mode="hard"):
+    """返回折行后的文本（保留原有换行）。
+
+    断行后行首/行尾的半角空格要吃掉：服务端会把它渲染成缩进，
+    英文段落里就会出现忽左忽右的错位（旧版 ascii=0.62 偏小，还常被二次折行切断单词）。
+    """
     if mode == "none":
         return text
     out = []
@@ -32,7 +36,7 @@ def wrap(text, budget=17.0, cjk=1.0, ascii_=0.62, mode="hard"):
             cw = char_width(ch, cjk, ascii_)
             if w + cw > budget:
                 if ch in HEAD_FORBIDDEN:          # 标点不落行首：挤在本行末尾
-                    out.append(cur + ch)
+                    out.append((cur + ch).rstrip(" "))
                     cur, w = "", 0.0
                     continue
                 cut = len(cur)
@@ -48,13 +52,13 @@ def wrap(text, budget=17.0, cjk=1.0, ascii_=0.62, mode="hard"):
                         cut = k
                 while cut > 1 and cur[cut - 1] in TAIL_FORBIDDEN:
                     cut -= 1
-                out.append(cur[:cut])
-                cur = cur[cut:]
+                out.append(cur[:cut].rstrip(" "))
+                cur = cur[cut:].lstrip(" ")
                 w = line_width(cur, cjk, ascii_)
             cur += ch
             w += cw
         if cur:
-            out.append(cur)
+            out.append(cur.rstrip(" "))
 
     # 孤字修正：末行太短就从上一行借两个字过来
     for i in range(len(out) - 1, 0, -1):

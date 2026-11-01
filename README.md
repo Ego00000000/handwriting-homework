@@ -129,7 +129,13 @@ python scripts/hw.py build \
 | `render` / `extract` / `layout` | 分阶段单跑，调参时用 |
 | `verify` | 校验尺寸、页数、是否残留整行黑线（加 `--deep` 逐页查） |
 
-常用参数：`--paper` `--paper-dir` `--font` `--scale` `--one-per-page` `--no-wide` `--no-pdf` `--force` `--jobs N`。完整参数与阈值见 [`references/params.md`](references/params.md)。
+常用参数：`--paper` `--paper-dir` `--font` `--scale` `--one-per-page` `--no-wide` `--pages N`
+`--min-scale 0.36` `--min-gain 0.08` `--pdf-dpi 200` `--pdf-quality 82` `--no-pdf` `--force` `--jobs N`。
+完整参数与阈值见 [`references/params.md`](references/params.md)。
+
+字体能写哪些字符用 `python scripts/hw.py glyphcheck` 查——**一号字体（青叶）不支持 `× ÷ · √ ² ①` 等
+数学符号，理工科请用 `--font 二号字体`**；缺字形的字符会被自动降级（`²`→`^2`、`×`→`*`）或直接报错，
+不会静默消失。
 
 ## 内置 12 张纸面
 

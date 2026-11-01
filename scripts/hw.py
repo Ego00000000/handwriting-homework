@@ -6,8 +6,9 @@
   hw.py doctor  [--edge PATH] [--offline]
   hw.py fonts   [--offline]
   hw.py paper   --paper 纸.jpg [--job job.json] [--clean-lines auto|on|off]
-  hw.py build   --job job.json [--out-dir DIR] [--font 字体] [--scale 1.6]
+  hw.py build   --job job.json [--out-dir DIR] [--font 字体] [--scale 1.6] [--pages N]
   hw.py render|extract|layout --job job.json
+  hw.py glyphcheck [--font 字体] [--refresh]
   hw.py verify  --out-dir DIR
 """
 import argparse
@@ -22,6 +23,7 @@ sys.path.insert(0, os.path.join(HERE, "lib"))
 import api          # noqa: E402
 import edge         # noqa: E402
 import figures      # noqa: E402
+import glyphs       # noqa: E402
 import imgfast      # noqa: E402
 import paper as paperlib  # noqa: E402
 import pngtool      # noqa: E402
@@ -37,7 +39,7 @@ DEFAULTS = dict(
     margin=[150, 150, 110, 110],
     budget=17.0,
     cjk=1.0,
-    ascii=0.62,
+    ascii=0.67,             # 半角字符宽度（CJK=1.0）；实测接口 ≈0.67，0.62 会被二次折行切断单词
     page_w=2481,
     page_h=3507,
     scale=1.6,
@@ -46,6 +48,13 @@ DEFAULTS = dict(
     # 落到纸上的字大小由排版缩放统一，所以和有图题完全一致。
     wide_no_fig=True,
     wide_ratio=1.29,        # 宽画布 = page_w × 该系数（2481 → 3200）
+    # 字形：字体写不出来的字符会被服务端静默跳过，默认先替换/报错
+    glyph_fix=True,
+    glyph_strict=False,
+    allow_drop=False,
+    # PDF：默认压到 200dpi 的 JPEG 副本（300 表示不压，沿用原 PNG）
+    pdf_dpi=200,
+    pdf_quality=82,
 )
 
 # 内置纸面组（12 张白纸照片，按文件名顺序一页一张循环使用）
@@ -165,7 +174,12 @@ def opts_of(job, args):
     for k_src, k_dst in (("font_size", "font_size"), ("line_spacing", "line_spacing"),
                          ("margin", "margin"), ("budget", "budget"),
                          ("page_w", "page_w"), ("page_h", "page_h"),
-                         ("wide_no_fig", "wide_no_fig"), ("wide_ratio", "wide_ratio")):
+                         ("wide_no_fig", "wide_no_fig"), ("wide_ratio", "wide_ratio"),
+                         ("cjk", "cjk"), ("ascii", "ascii"),
+                         ("pages", "pages"), ("min_scale", "min_scale"),
+                         ("min_gain", "min_gain"), ("gap_target", "gap_target"),
+                         ("pdf_dpi", "pdf_dpi"), ("pdf_quality", "pdf_quality"),
+                         ("glyph_fix", "glyph_fix"), ("glyph_strict", "glyph_strict")):
         if k_src in lay:
             o[k_dst] = lay[k_src]
     if getattr(args, "scale", None):
@@ -174,6 +188,15 @@ def opts_of(job, args):
         o["jobs"] = args.jobs
     if getattr(args, "no_wide", False):
         o["wide_no_fig"] = False
+    if getattr(args, "no_glyph_fix", False):
+        o["glyph_fix"] = False
+    if getattr(args, "glyph_strict", False):
+        o["glyph_strict"] = True
+    if getattr(args, "allow_drop", False):
+        o["allow_drop"] = True
+    for _k in ("pages", "min_scale", "min_gain", "pdf_dpi", "pdf_quality"):
+        if getattr(args, _k, None) is not None:
+            o[_k] = getattr(args, _k)
     return _derive_wide(o)
 
 
@@ -317,8 +340,12 @@ def cmd_build(args):
             print(f"      无图题 {n_no} 道：画布 {o['page_w']}→{o['page_w_wide']}，"
                   f"每行约 {o['budget_wide']:.0f} 字（字号 {o['font_size']} 不变）", flush=True)
     t = time.time()
+    glyphs.reset()
     pages = stage_page.run(job, o, work, e, force=args.force)
     print(f"      用时 {time.time() - t:.1f}s", flush=True)
+    gs = glyphs.summary()
+    if gs:
+        print(f"      字形：{gs}", flush=True)
 
     print("[3/4] 拆块", flush=True)
     t = time.time()
@@ -334,8 +361,13 @@ def cmd_build(args):
         lay["mode"] = "one"
     lay.setdefault("mode", "multi")
     lay.setdefault("figure_side", "right")
+    for k in ("pages", "min_scale", "min_gain", "gap_target"):
+        if o.get(k) is not None:
+            lay[k] = o[k]
     files = stage_layout.run(order, paper, lay, work, out, e,
-                             scale=o["scale"], pdf=not args.no_pdf)
+                             scale=o["scale"], pdf=not args.no_pdf,
+                             ls=o["line_spacing"], pdf_dpi=o["pdf_dpi"],
+                             pdf_quality=o["pdf_quality"])
 
     if not args.keep_pages:
         for p in pages:
@@ -361,7 +393,11 @@ def _stages(args, which):
     os.makedirs(out, exist_ok=True)
 
     if which in ("render", "all"):
+        glyphs.reset()
         stage_page.run(job, o, work, e, force=args.force)
+        gs = glyphs.summary()
+        if gs:
+            print(f"      字形：{gs}", flush=True)
     if which in ("extract", "all"):
         with open(os.path.join(work, "pages.json"), encoding="utf-8") as f:
             pages = json.load(f)
@@ -372,8 +408,41 @@ def _stages(args, which):
         with open(os.path.join(work, "blk", "meta.json"), encoding="utf-8") as f:
             meta = json.load(f)
         order = [meta[str(i + 1)] for i in range(len(job["questions"]))]
-        stage_layout.run(order, paper, job.get("layout") or {}, work, out, e,
-                         scale=o["scale"], pdf=not args.no_pdf)
+        lay = dict(job.get("layout") or {})
+        for k in ("pages", "min_scale", "min_gain", "gap_target"):
+            if o.get(k) is not None:
+                lay[k] = o[k]
+        stage_layout.run(order, paper, lay, work, out, e,
+                         scale=o["scale"], pdf=not args.no_pdf,
+                         ls=o["line_spacing"], pdf_dpi=o["pdf_dpi"],
+                         pdf_quality=o["pdf_quality"])
+    return 0
+
+
+def cmd_glyphcheck(args):
+    fonts = api.list_fonts()
+    if getattr(args, "font", None):
+        ttf = api.resolve_font(args.font)["ttf"]
+        fonts = [f for f in fonts if f["ttf"] == ttf]
+    mp = glyphs._map()
+    rep_map = mp.get("replace") or {}
+    blk_map = mp.get("block") or {}
+    for f in fonts:
+        print(f"== {f['alias']}（{f['ttf'][:-4]}，{f['note']}）==")
+        info = glyphs.fmt_table(f["ttf"], refresh=getattr(args, "refresh", False))
+        if not info:
+            print("  探测失败\n")
+            continue
+        sup = "".join(info["supported"])
+        uns = "".join(info["unsupported"])
+        rep = [c for c in uns if c in rep_map]
+        blk = [c for c in uns if c not in rep_map and c in blk_map]
+        oth = [c for c in uns if c not in rep_map and c not in blk_map]
+        print(f"  可用 {len(sup)} 个：{sup}")
+        print(f"  缺字形 {len(uns)} 个：{uns}")
+        print(f"    · 自动替换 {len(rep)} 个：{''.join(rep)}")
+        print(f"    · 报错提示 {len(blk)} 个：{''.join(blk)}")
+        print(f"    · 未配置 {len(oth)} 个（也会报错）：{''.join(oth)}\n")
     return 0
 
 
@@ -430,6 +499,20 @@ def main(argv=None):
         sp.add_argument("--jobs", type=int, help="拆块并行进程数")
         sp.add_argument("--edge", help="浏览器可执行文件路径")
         sp.add_argument("--offline", action="store_true", help="不访问网络（只用内置字体表）")
+        sp.add_argument("--pages", type=int,
+                        help="目标页数：直接按该页数分页（默认走「目标字号 + 加页收益」两个停止条件）")
+        sp.add_argument("--min-scale", type=float,
+                        help="目标字号（默认 0.38）：调小=字更小页更少，调大=字更大页更多")
+        sp.add_argument("--min-gain", type=float,
+                        help="加页收益门槛（默认 0.08）：多一页换不到这么多字号提升就不加")
+        sp.add_argument("--pdf-dpi", type=int, help="PDF 图片分辨率，默认 200；给 300 表示不压缩")
+        sp.add_argument("--pdf-quality", type=int, help="PDF 的 JPEG 质量，默认 82")
+        sp.add_argument("--no-glyph-fix", action="store_true",
+                        help="不做字形替换（字体缺字形的符号会被服务端静默吞掉）")
+        sp.add_argument("--glyph-strict", action="store_true",
+                        help="所有缺字形字符都报错，一个都不自动替换")
+        sp.add_argument("--allow-drop", action="store_true",
+                        help="缺字形字符直接丢弃，不报错")
         if force:
             sp.add_argument("--force", action="store_true", help="忽略缓存与断点，全部重跑")
             sp.add_argument("--keep-pages", action="store_true", help="保留 work/pages 下的整页图")
@@ -470,6 +553,11 @@ def main(argv=None):
         sp.add_argument("--no-wide", action="store_true",
                         help="无图题不加宽画布（回到老版式）")
         sp.set_defaults(func=lambda a, w=fn: _stages(a, w))
+
+    g = sub.add_parser("glyphcheck", help="探测字体支持哪些字符（数学符号、带圈数字等）")
+    g.add_argument("--font", help="只查一种字体（一号字体 / 二号字体）")
+    g.add_argument("--refresh", action="store_true", help="忽略缓存，重新探测")
+    g.set_defaults(func=cmd_glyphcheck)
 
     v = sub.add_parser("verify", help="校验成品")
     v.add_argument("--out-dir")
